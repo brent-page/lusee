@@ -267,7 +267,7 @@ def get_pointing(utc_times):
     return rec_to_lat_lon(*pointing.T)
 
 # plot the track of the schrod basin outward normal on the sky over time
-def plot_day(utc_times, frequency, map_nside = 128):
+def plot_day(utc_times, frequency, map_nside = 512):
     lat, lon = get_pointing(utc_times)
 
     skymap = gsm.generate(frequency)
@@ -277,44 +277,82 @@ def plot_day(utc_times, frequency, map_nside = 128):
     hp.mollview(skymap, coord='G', title='{} {:.0f} MHz, basemap: {}'.format(gsm.name, frequency, gsm.basemap))
     hp.projplot(np.pi/2 - lat, lon, 'rx') 
 
-# get the vectors pointing to all of the map pixels
-def get_map_pixel_local_vecs(utc_times, map_nside = 128):
-    # vectors pointing to all pixels in the sky, galactic coordinates.  these are constant in time
-    # dims: N-pixels, 3
-    galac_vecs = np.stack(hp.pix2vec(map_nside, np.arange(hp.nside2npix(map_nside)))).T
+# get vectors pointing to map pixels
+def get_map_pixel_local_vecs(utc_times, beam_idxs = None, map_nside = 512, nest = False):
 
     galactic_to_moon_rots = np.zeros((utc_times.size, 3, 3))
     for i, time in enumerate(utc_times):
         galactic_to_moon_rots[i] = spice.pxform('GALACTIC', 'MOON_ME', spice.datetime2et(time))
-    
     galactic_to_local_rots = np.einsum('ij,kjl->kil', local_to_moon_coords.T, galactic_to_moon_rots)
 
-    # vectors pointing to all pixels in the sky, local coordinates at schrodinger basin.  these vary in time
-    # dims: time, N-pixels, 3
-    local_vecs = np.einsum('ijk,lk->ilj', galactic_to_local_rots, galac_vecs)
+    galac_vecs = np.stack(hp.pix2vec(map_nside, np.arange(hp.nside2npix(map_nside)), nest = nest)).T
+
+    if not (beam_idxs is None):
+        # transform a different set of pixel positions for each time
+        galac_vecs = galac_vecs[beam_idxs]
+        local_vecs = np.einsum('ijk,ilk->ilj', galactic_to_local_rots, galac_vecs)
+    else:
+        # transform the positions of all pixels for each time
+        local_vecs = np.einsum('ijk,lk->ilj', galactic_to_local_rots, galac_vecs)
 
     return galac_vecs, local_vecs
+
+# to figure out which pixels are in the beam, look at a downsampled version of the map.  pixels in the downsampled map are groups of pixels from the higher res map.  if ( (the beam strength at the center of a downsampled pixel is > beam_threshold) and (the downsampled pixel center is above the horizon) ), accept all of its child pixels as being in the beam
+# ds: downsampled
+# fs: fullsampled
+def get_beam_pixels(utc_times, NS_beam_stdev, EW_beam_stdev, beam_threshold, fs_map_nside):
+    ds_map_nside = 64
+    ds_map_npix = hp.nside2npix(ds_map_nside)
+    fs_map_npix = hp.nside2npix(fs_map_nside)
+    npix_ratio = fs_map_npix//ds_map_npix
+    # mapping of downsampled to fullsampled pixel numbers in the 'nest' pixel numbering scheme
+    ds_to_fs = np.arange(fs_map_npix).reshape(ds_map_npix, npix_ratio)
+
+    _, local_vecs_ds = get_map_pixel_local_vecs(utc_times, map_nside = ds_map_nside, nest = True)
+    beam_weights = np.exp(-local_vecs_ds[..., 0]**2/ (2 * NS_beam_stdev**2)) * np.exp(-local_vecs_ds[..., 1]**2/ (2 * EW_beam_stdev**2))
+    in_beam = ((local_vecs_ds[..., 2] > -.02) & (beam_weights > beam_threshold))
+    not_in_beam_idxs = [np.flatnonzero(~in_beam_at_time) for in_beam_at_time in in_beam]
+    in_beam_idxs = [np.flatnonzero(in_beam_at_time) for in_beam_at_time in in_beam]
+    max_pixel_num = int(np.max(np.sum(in_beam, axis = 1)) * npix_ratio)
+    fs_in_beam_idxs = np.zeros((utc_times.size, max_pixel_num))
+    for i, (this_in_beam, this_not_in_beam) in enumerate(zip(in_beam_idxs, not_in_beam_idxs)):
+        this_pixel_num = this_in_beam.size * npix_ratio
+        fs_in_beam_idxs[i, :this_pixel_num] = hp.nest2ring(fs_map_nside, ds_to_fs[this_in_beam]).flatten()
+
+        # in order to have the same number of pixels at each time, add some throwaway pixels if necessary
+        fs_in_beam_idxs[i, this_pixel_num:] = hp.nest2ring(fs_map_nside, ds_to_fs[this_not_in_beam[:(max_pixel_num - this_pixel_num)//npix_ratio]]).flatten()
+
+    return fs_in_beam_idxs.astype(int)
 
 
 # utc_times: np array of datetimes
 # freqs: np array, MHz
-def time_freq_K(utc_times, freqs, NS_20MHz_beam_stdev = np.sin(60 * np.pi/180), EW_20MHz_beam_stdev = np.sin(5 * np.pi/180), map_nside = 128):
+def time_freq_K(utc_times, freqs, NS_20MHz_beam_stdev = np.sin(5 * np.pi/180), EW_20MHz_beam_stdev = np.sin(5 * np.pi/180), map_nside = 512):
     
-    _, local_vecs = get_map_pixel_local_vecs(utc_times, map_nside)
+    threshold = .01
+
+    # looking at downsampled map to get an idea of which pixels to sum over
+    beam_idxs = get_beam_pixels(utc_times, NS_20MHz_beam_stdev, EW_20MHz_beam_stdev, threshold, fs_map_nside = map_nside)
+
+    # now get full resolution pixel positions
+    _, local_vecs = get_map_pixel_local_vecs(utc_times, beam_idxs, map_nside)
+
+    below_horizon = local_vecs[..., 2] < 0
+    local_vecs2 = local_vecs**2
 
     KK = np.zeros((utc_times.size, freqs.size))
-
     for i, freq in enumerate(freqs):
         NS_beam_stdev = NS_20MHz_beam_stdev * (20/freq)
         EW_beam_stdev = EW_20MHz_beam_stdev * (20/freq)
-        beam_weights = np.exp(-local_vecs[..., 0]**2/ (2 * NS_beam_stdev**2)) * np.exp(-local_vecs[..., 1]**2/ (2 * EW_beam_stdev**2))
-        # pixels that are below the horizon can't be seen
-        beam_weights[local_vecs[:,:,2] < 0] = 0
+        beam_weights = np.exp(-local_vecs2[..., 0]/ (2 * NS_beam_stdev**2)) * np.exp(-local_vecs2[..., 1]/ (2 * EW_beam_stdev**2))
+#          pixels that are below the horizon can't be seen
+        beam_weights[below_horizon] = 0
 
         skymap = gsm.generate(freq)
-        skymap = hp.ud_grade(skymap, map_nside)
+        if not (map_nside == hp.get_nside(skymap)):
+            skymap = hp.ud_grade(skymap, map_nside)
 
-        KK[:, i] = np.sum(skymap[None, :] * beam_weights, axis = 1) / np.sum(beam_weights, axis = 1)
+        KK[:, i] = np.sum(skymap[beam_idxs] * beam_weights, axis = 1) / np.sum(beam_weights, axis = 1)
 
     plt.figure()
     plt.pcolormesh(utc_times, freqs, KK.T, shading = 'nearest', norm = mcolors.LogNorm())
@@ -325,17 +363,30 @@ def time_freq_K(utc_times, freqs, NS_20MHz_beam_stdev = np.sin(60 * np.pi/180), 
     
     return KK
 
+from time import time as timer
+def drive():
+    sta = timer()
+    utc_times = np.arange(datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(hours = 2)).astype(datetime)
+    KK = time_freq_K(utc_times, freqs = np.arange(20, 51, 1), NS_20MHz_beam_stdev = np.sin(60 * np.pi/180), EW_20MHz_beam_stdev = np.sin(5 * np.pi/180), map_nside = 128)
+    sto = timer()
+    print(sto - sta)
+
 
 # utc_time: datetime
-def plot_beam(utc_time, NS_beam_stdev, EW_beam_stdev, map_nside = 128):
-    galac_vecs, local_vecs = get_map_pixel_local_vecs(np.array([utc_time]), map_nside)
+def plot_beam(utc_time, NS_beam_stdev, EW_beam_stdev, map_nside = 512):
+    threshold = .01
+    utc_time = np.array([utc_time])
+    beam_idxs = get_beam_pixels(utc_time, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside = map_nside)
+    galac_vecs, local_vecs = get_map_pixel_local_vecs(utc_time, beam_idxs, map_nside = map_nside, nest = False)
+    galac_vecs = galac_vecs[0]
+
     galac_lats, galac_lons = rec_to_lat_lon(*galac_vecs.T)
 
     beam_weights = np.exp(-local_vecs[0, :, 0]**2/ (2 * NS_beam_stdev**2)) * np.exp(-local_vecs[0, :, 1]**2/ (2 * EW_beam_stdev**2))
 
     # pixels that are below the horizon can't be seen
     beam_weights[local_vecs[0,:,2] < 0] = 0
-    beam_sel = beam_weights > 0.01
+    beam_sel = beam_weights > 0
 
     frequency = 20
     skymap = gsm.generate(frequency)
@@ -343,4 +394,7 @@ def plot_beam(utc_time, NS_beam_stdev, EW_beam_stdev, map_nside = 128):
     skymap = np.log10(skymap)
 
     hp.mollview(skymap, coord='G', title='{} {:.0f} MHz, basemap: {}'.format(gsm.name, frequency, gsm.basemap))
-    hp.projscatter(theta = np.pi/2 - galac_lats[beam_sel], phi = galac_lons[beam_sel], lonlat = False, c = beam_weights[beam_sel], cmap = plt.cm.Blues) 
+    hp.projscatter(theta = np.pi/2 - galac_lats[beam_sel], phi = galac_lons[beam_sel], lonlat = False, c = beam_weights[beam_sel], cmap = plt.cm.Blues, s = .01 * (512/map_nside)**2)
+
+
+
