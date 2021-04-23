@@ -573,3 +573,10 @@ def get_delta_T (utc_times, frequency, wfall, return_inv2 = False):
     if return_inv2:
         return inv2
     return np.sqrt(1/inv2)
+
+def get_modes (wfall):
+    mean = wfall.mean(axis=0)
+    mdiv = wfall/mean[None,:]-1
+    cov = np.cov(mdiv,rowvar=False)
+    eva,eve = np.linalg.eig(cov)
+    return mean, eva, eve
