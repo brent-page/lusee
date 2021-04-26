@@ -455,42 +455,46 @@ def time_freq_K(
         freqs,
         NS_20MHz_beam_stdev=np.sin(5 * np.pi / 180),
         EW_20MHz_beam_stdev=np.sin(5 * np.pi / 180),
-        map_nside=512, plot = False):
+        map_nside=512, plot = False,
+        time_chunk = 100, verbose=False):
 
     threshold = 0.01
 
-    # looking at downsampled map to get an idea of which pixels to sum over
-    beam_idxs = get_beam_pixels(
-        utc_times,
-        NS_20MHz_beam_stdev,
-        EW_20MHz_beam_stdev,
-        threshold,
-        fs_map_nside=map_nside,
-    )
-
-    # now get full resolution pixel positions
-    _, local_vecs = get_map_pixel_local_vecs(utc_times, beam_idxs, map_nside)
-
-    below_horizon = local_vecs[..., 2] < 0
-    local_vecs2 = local_vecs ** 2
 
     KK = np.zeros((utc_times.size, freqs.size))
     for i, freq in enumerate(freqs):
+        if verbose:
+            print (f" Getting sky at {freq}MHz...")
         NS_beam_stdev = NS_20MHz_beam_stdev * (20 / freq)
         EW_beam_stdev = EW_20MHz_beam_stdev * (20 / freq)
-        beam_weights = np.exp(-local_vecs2[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
-            -local_vecs2[..., 1] / (2 * EW_beam_stdev ** 2)
+        # looking at downsampled map to get an idea of which pixels to sum over
+        beam_idxs = get_beam_pixels(
+            utc_times,
+            NS_beam_stdev,
+            EW_beam_stdev,
+            threshold,
+            fs_map_nside=map_nside,
         )
-        #          pixels that are below the horizon can't be seen
-        beam_weights[below_horizon] = 0
 
         skymap = gsm.generate(freq)
         if not (map_nside == hp.get_nside(skymap)):
             skymap = hp.ud_grade(skymap, map_nside)
+        for ti_start in range(0,utc_times.size, time_chunk):
+            ti_end = min(ti_start+time_chunk,utc_times.size)
+            if verbose:
+                print (f"     ...time {ti_start}:{ti_end}.") 
+            _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], beam_idxs[ti_start:ti_end,:], map_nside)
+            below_horizon = local_vecs[..., 2] < 0
+            local_vecs = local_vecs ** 2
 
-        KK[:, i] = np.sum(skymap[beam_idxs] * beam_weights, axis=1) / np.sum(
-            beam_weights, axis=1
-        )
+            beam_weights = np.exp(-local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
+                -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2)
+            )
+            #          pixels that are below the horizon can't be seen
+            beam_weights[below_horizon] = 0
+            KK[ti_start:ti_end, i] = np.sum(skymap[beam_idxs[ti_start:ti_end,:]] * beam_weights, axis=1) / np.sum(
+                beam_weights, axis=1
+            )
 
     if plot:
         plt.figure()
