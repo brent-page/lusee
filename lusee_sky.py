@@ -464,6 +464,9 @@ def time_freq_K(
     threshold = 0.01
 
     # looking at downsampled map to get an idea of which pixels to sum over
+    NS_beam_stdev = NS_20MHz_beam_stdev * (20 / freqs.min())
+    EW_beam_stdev = EW_20MHz_beam_stdev * (20 / freqs.min())
+
     beam_idxs = get_beam_pixels(
         utc_times,
         NS_beam_stdev,
@@ -471,7 +474,7 @@ def time_freq_K(
         threshold,
         fs_map_nside=map_nside,
     )
-
+    print (beam_idxs.shape)
     KK = np.zeros((utc_times.size, freqs.size))
     for i, freq in enumerate(freqs):
         if verbose:
@@ -486,19 +489,20 @@ def time_freq_K(
             ti_end = min(ti_start+time_chunk,utc_times.size)
             if verbose:
                 print (f"     ...time {ti_start}:{ti_end}.") 
-            _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], beam_idxs[ti_start:ti_end,:], map_nside)
+            _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], beam_idxs[ti_start:ti_end,:],
+                                                     map_nside)
             below_horizon = local_vecs[..., 2] < 0
-            local_vecs = local_vecs ** 2
-
+            local_vecs  = local_vecs**2
             beam_weights = np.exp(-local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
-                -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2)
-            )
+                -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2))
             #          pixels that are below the horizon can't be seen
-            beam_weights[below_horizon] = 0
+            #beam_weights[below_horizon] = 0
+            print (np.sum(beam_weights, axis=1), np.sum(below_horizon,axis=1), local_vecs[...,1].min(axis=1))
+            print (beam_weights.max(axis=1))
+            print (skymap.shape, skymap[beam_idxs[ti_start:ti_end,:]].shape)
             KK[ti_start:ti_end, i] = np.sum(skymap[beam_idxs[ti_start:ti_end,:]] * beam_weights, axis=1) / np.sum(
-                beam_weights, axis=1
-            )
-
+                beam_weights, axis=1)
+            stop()
     if plot:
         plt.figure()
         plt.pcolormesh(utc_times, freqs, KK.T, shading="nearest", norm=mcolors.LogNorm())
