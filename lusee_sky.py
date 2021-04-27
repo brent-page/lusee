@@ -145,11 +145,11 @@ def load_kernels():
 
 
 # get the position of 'body' relative to the moon in moon mean-earth (MOON_ME) coordinates
-def get_pos(body, times):
+def get_pos(body, times, ref = "MOON_ME"):
     body_pos = np.zeros((times.size, 3))
     for i, time in enumerate(times):
         body_pos[i] = spice.spkezp(
-            targ=body, et=spice.datetime2et(time), ref="MOON_ME", abcorr="LT", obs=MOON
+            targ=body, et=spice.datetime2et(time), ref=ref, abcorr="LT", obs=MOON
         )[0]
     body_pos = body_pos / ((np.sum(body_pos ** 2, axis=1)) ** (1 / 2))[:, np.newaxis]
     return body_pos
@@ -375,7 +375,7 @@ def plot_day(utc_times, frequency, map_nside=512):
         coord="G",
         title="{} {:.0f} MHz, basemap: {}".format(gsm.name, frequency, gsm.basemap),
     )
-    hp.projplot(np.pi / 2 - lat, lon, "rx")
+    hp.projplot(np.pi / 2 - lat, lon, "wx")
 
 
 # get vectors pointing to map pixels
@@ -453,13 +453,24 @@ def get_beam_pixels(
 def time_freq_K(
         utc_times,
         freqs,
-        NS_20MHz_beam_stdev=np.sin(5 * np.pi / 180),
-        EW_20MHz_beam_stdev=np.sin(5 * np.pi / 180),
+        NS_20MHz_beam_stdev_degr=5,
+        EW_20MHz_beam_stdev_degr=5,
         map_nside=512, plot = False,
         time_chunk = 100, verbose=False):
 
+    NS_20MHz_beam_stdev = np.sin(NS_20MHz_beam_stdev_degr * np.pi/180)
+    EW_20MHz_beam_stdev = np.sin(EW_20MHz_beam_stdev_degr * np.pi/180)
+
     threshold = 0.01
 
+    # looking at downsampled map to get an idea of which pixels to sum over
+    beam_idxs = get_beam_pixels(
+        utc_times,
+        NS_beam_stdev,
+        EW_beam_stdev,
+        threshold,
+        fs_map_nside=map_nside,
+    )
 
     KK = np.zeros((utc_times.size, freqs.size))
     for i, freq in enumerate(freqs):
@@ -467,14 +478,6 @@ def time_freq_K(
             print (f" Getting sky at {freq}MHz...")
         NS_beam_stdev = NS_20MHz_beam_stdev * (20 / freq)
         EW_beam_stdev = EW_20MHz_beam_stdev * (20 / freq)
-        # looking at downsampled map to get an idea of which pixels to sum over
-        beam_idxs = get_beam_pixels(
-            utc_times,
-            NS_beam_stdev,
-            EW_beam_stdev,
-            threshold,
-            fs_map_nside=map_nside,
-        )
 
         skymap = gsm.generate(freq)
         if not (map_nside == hp.get_nside(skymap)):
@@ -504,8 +507,8 @@ def time_freq_K(
         cbar.set_label("Temp. (K)")
         plt.title(
             "RJ Temp, NS 20 MHz sigma: {:.0f}°, EW 20 MHz sigma: {:.0f}°".format(
-                np.arcsin(NS_20MHz_beam_stdev) * 180 / np.pi,
-                np.arcsin(EW_20MHz_beam_stdev) * 180 / np.pi,
+                NS_20MHz_beam_stdev_degr,
+                EW_20MHz_beam_stdev_degr,
             )
         )
 
@@ -520,8 +523,8 @@ def drive():
     KK = time_freq_K(
         utc_times,
         freqs=np.arange(20, 51, 1),
-        NS_20MHz_beam_stdev=np.sin(60 * np.pi / 180),
-        EW_20MHz_beam_stdev=np.sin(5 * np.pi / 180),
+        NS_20MHz_beam_stdev_degr=60,
+        EW_20MHz_beam_stdev_degr=5,
         map_nside=128,
     )
     sto = timer()
@@ -529,8 +532,11 @@ def drive():
 
 
 # utc_time: datetime
-def plot_beam(utc_time, NS_beam_stdev, EW_beam_stdev, map_nside=512):
-    threshold = 0.01
+def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, threshold = 0.01):
+
+    NS_beam_stdev = np.sin(NS_beam_stdev_degr * np.pi/180)
+    EW_beam_stdev = np.sin(EW_beam_stdev_degr * np.pi/180)
+
     utc_time = np.array([utc_time])
     beam_idxs = get_beam_pixels(
         utc_time, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside=map_nside
@@ -568,6 +574,7 @@ def plot_beam(utc_time, NS_beam_stdev, EW_beam_stdev, map_nside=512):
         cmap=plt.cm.Blues,
         s=0.01 * (512 / map_nside) ** 2,
     )
+
 
 def get_delta_T (utc_times, frequency, wfall, return_inv2 = False):
     deltaT = ((utc_times[-1]-utc_times[0])/(len(utc_times)-1)).seconds
