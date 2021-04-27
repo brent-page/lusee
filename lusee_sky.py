@@ -409,18 +409,15 @@ def get_map_pixel_local_vecs(utc_times, beam_idxs=None, map_nside=512, nest=Fals
 # ds: downsampled
 # fs: fullsampled
 def get_beam_pixels(
-    utc_times, NS_beam_stdev, EW_beam_stdev, beam_threshold, fs_map_nside
+    utc_times, local_vecs_ds, NS_beam_stdev, EW_beam_stdev, beam_threshold, fs_map_nside
 ):
-    ds_map_nside = 64
+    ds_map_nside = hp.npix2nside(local_vecs_ds.shape[1])
     ds_map_npix = hp.nside2npix(ds_map_nside)
     fs_map_npix = hp.nside2npix(fs_map_nside)
     npix_ratio = fs_map_npix // ds_map_npix
     # mapping of downsampled to fullsampled pixel numbers in the 'nest' pixel numbering scheme
     ds_to_fs = np.arange(fs_map_npix).reshape(ds_map_npix, npix_ratio)
 
-    _, local_vecs_ds = get_map_pixel_local_vecs(
-        utc_times, map_nside=ds_map_nside, nest=True
-    )
     beam_weights = np.exp(
         -local_vecs_ds[..., 0] ** 2 / (2 * NS_beam_stdev ** 2)
     ) * np.exp(-local_vecs_ds[..., 1] ** 2 / (2 * EW_beam_stdev ** 2))
@@ -463,11 +460,17 @@ def time_freq_K(
 
     threshold = 0.01
 
+    ds_map_nside = 64
+    _, local_vecs_ds = get_map_pixel_local_vecs(
+        utc_times, map_nside=ds_map_nside, nest=True
+    )
+
     # looking at downsampled map to get an idea of which pixels to sum over
     beam_idxs = get_beam_pixels(
         utc_times,
-        NS_beam_stdev,
-        EW_beam_stdev,
+        local_vecs_ds,
+        NS_20MHz_beam_stdev,
+        EW_20MHz_beam_stdev,
         threshold,
         fs_map_nside=map_nside,
     )
@@ -493,7 +496,7 @@ def time_freq_K(
             beam_weights = np.exp(-local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
                 -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2)
             )
-            #          pixels that are below the horizon can't be seen
+            # pixels that are below the horizon can't be seen
             beam_weights[below_horizon] = 0
             KK[ti_start:ti_end, i] = np.sum(skymap[beam_idxs[ti_start:ti_end,:]] * beam_weights, axis=1) / np.sum(
                 beam_weights, axis=1
@@ -518,7 +521,7 @@ def time_freq_K(
 def drive():
     sta = timer()
     utc_times = np.arange(
-        datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(hours=2)
+        datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(hours=4)
     ).astype(datetime)
     KK = time_freq_K(
         utc_times,
@@ -526,6 +529,7 @@ def drive():
         NS_20MHz_beam_stdev_degr=60,
         EW_20MHz_beam_stdev_degr=5,
         map_nside=128,
+        time_chunk=20,
     )
     sto = timer()
     print(sto - sta)
