@@ -460,45 +460,53 @@ def time_freq_K(
 
     threshold = 0.01
 
+    # downsampled pixel positions 
     ds_map_nside = 64
     _, local_vecs_ds = get_map_pixel_local_vecs(
         utc_times, map_nside=ds_map_nside, nest=True
     )
 
     # looking at downsampled map to get an idea of which pixels to sum over
-    beam_idxs = get_beam_pixels(
+    widest_beam_idxs = get_beam_pixels(
         utc_times,
         local_vecs_ds,
-        NS_20MHz_beam_stdev,
-        EW_20MHz_beam_stdev,
+        NS_20MHz_beam_stdev * (20/freqs.min()),
+        EW_20MHz_beam_stdev * (20/freqs.min()),
         threshold,
         fs_map_nside=map_nside,
     )
 
+    skymaps = gsm.generate(freqs)
+    if not (map_nside == hp.get_nside(skymaps)):
+        skymaps = hp.ud_grade(skymaps, map_nside)
+
     KK = np.zeros((utc_times.size, freqs.size))
-    for i, freq in enumerate(freqs):
+
+    for ti_start in range(0,utc_times.size, time_chunk):
+        ti_end = min(ti_start+time_chunk,utc_times.size)
         if verbose:
-            print (f" Getting sky at {freq}MHz...")
-        NS_beam_stdev = NS_20MHz_beam_stdev * (20 / freq)
-        EW_beam_stdev = EW_20MHz_beam_stdev * (20 / freq)
+            print (f"     ...time {ti_start}:{ti_end}.") 
 
-        skymap = gsm.generate(freq)
-        if not (map_nside == hp.get_nside(skymap)):
-            skymap = hp.ud_grade(skymap, map_nside)
-        for ti_start in range(0,utc_times.size, time_chunk):
-            ti_end = min(ti_start+time_chunk,utc_times.size)
+        # get local vecs for widest beam
+        _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
+        
+        below_horizon = local_vecs[..., 2] < 0
+        local_vecs = local_vecs ** 2
+
+        for i, freq in enumerate(freqs):
             if verbose:
-                print (f"     ...time {ti_start}:{ti_end}.") 
-            _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], beam_idxs[ti_start:ti_end,:], map_nside)
-            below_horizon = local_vecs[..., 2] < 0
-            local_vecs = local_vecs ** 2
+                print (f" Averaging sky at {freq}MHz...")
 
+            NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
+            EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
+
+            # local_vecs gets squared above
             beam_weights = np.exp(-local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
                 -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2)
             )
             # pixels that are below the horizon can't be seen
             beam_weights[below_horizon] = 0
-            KK[ti_start:ti_end, i] = np.sum(skymap[beam_idxs[ti_start:ti_end,:]] * beam_weights, axis=1) / np.sum(
+            KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
                 beam_weights, axis=1
             )
 
@@ -518,7 +526,7 @@ def time_freq_K(
     return KK
 
 
-def drive():
+def drive(hours = 4, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
     sta = timer()
     utc_times = np.arange(
         datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(hours=4)
@@ -526,10 +534,11 @@ def drive():
     KK = time_freq_K(
         utc_times,
         freqs=np.arange(20, 51, 1),
-        NS_20MHz_beam_stdev_degr=60,
-        EW_20MHz_beam_stdev_degr=5,
-        map_nside=128,
-        time_chunk=20,
+        NS_20MHz_beam_stdev_degr=NS,
+        EW_20MHz_beam_stdev_degr=EW,
+        map_nside=nside,
+        time_chunk=time_chunk,
+        plot = plot
     )
     sto = timer()
     print(sto - sta)
