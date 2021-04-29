@@ -491,8 +491,6 @@ def time_freq_K(
         _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
         
         below_horizon = local_vecs[..., 2] < 0
-        num_below_horizon = np.sum(below_horizon, axis = 1)
-        print((np.max(num_below_horizon) - np.min(num_below_horizon))/np.mean(num_below_horizon))
         local_vecs = local_vecs ** 2
 
         for i, freq in enumerate(freqs):
@@ -509,8 +507,6 @@ def time_freq_K(
 
             # pixels that are below the horizon can't be seen
             beam_weights[below_horizon] = 0
-            test = np.sum(beam_weights, axis = 1)
-            print(np.max(np.absolute(test[:, None] - test[None, :]))/np.mean(test))
             KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
                 beam_weights, axis=1
             )
