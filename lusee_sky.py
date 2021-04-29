@@ -421,7 +421,7 @@ def get_beam_pixels(
     beam_weights = np.exp(
         -local_vecs_ds[..., 0] ** 2 / (2 * NS_beam_stdev ** 2)
     ) * np.exp(-local_vecs_ds[..., 1] ** 2 / (2 * EW_beam_stdev ** 2))
-    in_beam = (local_vecs_ds[..., 2] > -0.02) & (beam_weights > beam_threshold)
+    in_beam = (local_vecs_ds[..., 2] > -0.05) & (beam_weights > beam_threshold)
     not_in_beam_idxs = [np.flatnonzero(~in_beam_at_time) for in_beam_at_time in in_beam]
     in_beam_idxs = [np.flatnonzero(in_beam_at_time) for in_beam_at_time in in_beam]
     max_pixel_num = int(np.max(np.sum(in_beam, axis=1)) * npix_ratio)
@@ -491,6 +491,8 @@ def time_freq_K(
         _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
         
         below_horizon = local_vecs[..., 2] < 0
+        num_below_horizon = np.sum(below_horizon, axis = 1)
+        print((np.max(num_below_horizon) - np.min(num_below_horizon))/np.mean(num_below_horizon))
         local_vecs = local_vecs ** 2
 
         for i, freq in enumerate(freqs):
@@ -504,8 +506,11 @@ def time_freq_K(
             beam_weights = np.exp(-local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
                 -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2)
             )
+
             # pixels that are below the horizon can't be seen
             beam_weights[below_horizon] = 0
+            test = np.sum(beam_weights, axis = 1)
+            print(np.max(np.absolute(test[:, None] - test[None, :]))/np.mean(test))
             KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
                 beam_weights, axis=1
             )
@@ -526,14 +531,15 @@ def time_freq_K(
     return KK
 
 
-def drive(hours = 4, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
+def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
     sta = timer()
     utc_times = np.arange(
-        datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(hours=4)
+        datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes=minutes)
     ).astype(datetime)
     KK = time_freq_K(
         utc_times,
-        freqs=np.arange(20, 51, 1),
+        freqs=np.arange(10, 71, 10),
+#         freqs=np.arange(20, 51, 1),
         NS_20MHz_beam_stdev_degr=NS,
         EW_20MHz_beam_stdev_degr=EW,
         map_nside=nside,
@@ -541,7 +547,7 @@ def drive(hours = 4, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False
         plot = plot
     )
     sto = timer()
-    print(sto - sta)
+#     print(sto - sta)
 
 
 # utc_time: datetime
@@ -551,9 +557,17 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
     EW_beam_stdev = np.sin(EW_beam_stdev_degr * np.pi/180)
 
     utc_time = np.array([utc_time])
-    beam_idxs = get_beam_pixels(
-        utc_time, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside=map_nside
+
+    # downsampled pixel positions 
+    ds_map_nside = 64
+    _, local_vecs_ds = get_map_pixel_local_vecs(
+        utc_time, map_nside=ds_map_nside, nest=True
     )
+
+    beam_idxs = get_beam_pixels(
+        utc_time, local_vecs_ds, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside=map_nside
+    )
+
     galac_vecs, local_vecs = get_map_pixel_local_vecs(
         utc_time, beam_idxs, map_nside=map_nside, nest=False
     )
@@ -604,3 +618,52 @@ def get_modes (wfall):
     cov = np.cov(mdiv,rowvar=False)
     eva,eve = np.linalg.eig(cov)
     return mean, eva, eve
+
+from scipy import optimize
+global spec_indices, mean_abs_residuals
+def low_freq_scaling():
+    global spec_indices, mean_abs_residuals
+
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    log_power_law_residual = lambda p, x, y: (y - (p[0] * x))
+
+    spec_indices = np.zeros(maps.shape[1])
+    mean_abs_residuals = np.zeros(maps.shape[1])
+    for pixel_num in range(maps.shape[1]):
+        fit = optimize.leastsq(log_power_law_residual, x0 = [-2.5], args = (logfreqs, logmaps[:, pixel_num]))
+        spec_indices[pixel_num] = fit[0][0]
+        mean_abs_residuals[pixel_num] = np.mean(np.absolute(log_power_law_residual(fit[0], logfreqs, logmaps[:, pixel_num])**2))
+
+def power_law_plot():
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    random = np.random.randint(0, maps.shape[1], 100)
+    plt.figure()
+    for num in random:
+        plt.plot(logfreqs, logmaps[:, num])
+
+    plt.xlabel(r'log($\nu$/10MHz)')
+    plt.ylabel(r'log($T/T_{10MHz}$)')
+    plt.title(r'10-15 MHz pyGDSM T vs $\nu$ for 100 random pixels')
+
+def sky_spec_indices(mask = False):
+
+    spec = spec_indices.copy()
+    resid = mean_abs_residuals.copy()
+    if mask:
+#         sel = ((spec < -3) | (spec > -2))
+        sel = (resid)**(1/2) > 0.01
+        spec[sel] = np.nan
+        resid[sel] = np.nan
+    hp.mollview((resid)**(1/2), title = 'mean absolute power law fit residuals \n frequency range: 10-15 MHz \n' + r'(mean over frequency)$\left[|\log\left(\frac{T}{T_{10MHz}}\right) - \beta_{fit}\log\left(\frac{\nu}{10MHz}\right)|\right]$' + '\n masked above 0.01')
+    hp.mollview(spec, title = 'spectral indices between 10 and 15 MHz')
+
