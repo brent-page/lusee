@@ -421,28 +421,18 @@ def get_beam_pixels(
     beam_weights = np.exp(
         -local_vecs_ds[..., 0] ** 2 / (2 * NS_beam_stdev ** 2)
     ) * np.exp(-local_vecs_ds[..., 1] ** 2 / (2 * EW_beam_stdev ** 2))
-    in_beam = (local_vecs_ds[..., 2] > -0.05) & (beam_weights > beam_threshold)
-    not_in_beam_idxs = [np.flatnonzero(~in_beam_at_time) for in_beam_at_time in in_beam]
-    in_beam_idxs = [np.flatnonzero(in_beam_at_time) for in_beam_at_time in in_beam]
-    max_pixel_num = int(np.max(np.sum(in_beam, axis=1)) * npix_ratio)
-    fs_in_beam_idxs = np.zeros((utc_times.size, max_pixel_num))
-    for i, (this_in_beam, this_not_in_beam) in enumerate(
-        zip(in_beam_idxs, not_in_beam_idxs)
-    ):
-        this_pixel_num = this_in_beam.size * npix_ratio
-        fs_in_beam_idxs[i, :this_pixel_num] = hp.nest2ring(
-            fs_map_nside, ds_to_fs[this_in_beam]
-        ).flatten()
 
-        # in order to have the same number of pixels at each time, add some throwaway pixels if necessary
-        fs_in_beam_idxs[i, this_pixel_num:] = hp.nest2ring(
-            fs_map_nside,
-            ds_to_fs[
-                this_not_in_beam[: (max_pixel_num - this_pixel_num) // npix_ratio]
-            ],
-        ).flatten()
+    above_horizon = (local_vecs_ds[..., 2] > -0.05) 
+    beam_weights[~above_horizon] = 0
+    sorted_beam_idxs = np.argsort(beam_weights, axis = 1)[:, ::-1]
+    beam_weights = np.take_along_axis(beam_weights, sorted_beam_idxs, axis = 1)
 
-    return fs_in_beam_idxs.astype(int)
+    # for einsum, want to have the same number of pixels at each time
+    num_ds_pixels_in_beam = np.max(np.sum(beam_weights > beam_threshold, axis = 1))
+    beam_idxs = sorted_beam_idxs[:, :num_ds_pixels_in_beam]
+
+    fs_in_beam_idxs = ds_to_fs[beam_idxs].reshape(-1, ds_to_fs.shape[1] * beam_idxs.shape[1])
+    return hp.nest2ring(fs_map_nside, fs_in_beam_idxs)
 
 
 # utc_times: np array of datetimes
