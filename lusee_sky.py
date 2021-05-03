@@ -10,6 +10,7 @@ from pygdsm import GlobalSkyModel, GlobalSkyModel2016
 import spiceypy as spice
 from datetime import datetime
 from datetime import timedelta
+from scipy.interpolate import interp1d
 
 # gsm
 gsm = GlobalSkyModel()
@@ -524,3 +525,12 @@ def sky_spec_indices(mask = False):
     hp.mollview((resid)**(1/2), title = 'mean absolute power law fit residuals \n frequency range: 10-15 MHz \n' + r'(mean over frequency)$\left[|\log\left(\frac{T}{T_{10MHz}}\right) - \beta_{fit}\log\left(\frac{\nu}{10MHz}\right)|\right]$' + '\n masked above 0.01')
     hp.mollview(spec, title = 'spectral indices between 10 and 15 MHz')
 
+
+def get_signal (freq):
+    # Returns expected signal in K on the given frequency array
+    da = np.load('waterfalls/signal.npz')
+    nu = da['nu']
+    Tsig = da['Tsig']
+    return interp1d(nu,Tsig,kind='cubic')(freq)
+
+    
