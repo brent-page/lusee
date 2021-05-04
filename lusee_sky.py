@@ -477,6 +477,8 @@ def time_freq_K(
     )
 
     skymaps = gsm.generate(freqs)
+    if verbose:
+        print ("Generated maps nside = ", hp.get_nside(skymaps))
     if not (map_nside == hp.get_nside(skymaps)):
         skymaps = hp.ud_grade(skymaps, map_nside)
 
@@ -495,7 +497,7 @@ def time_freq_K(
 
         for i, freq in enumerate(freqs):
             if verbose:
-                print (f" Averaging sky at {freq}MHz...")
+                print (f" Integrating sky at {freq}MHz...")
 
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
@@ -507,8 +509,10 @@ def time_freq_K(
             # pixels that are below the horizon can't be seen
             beam_weights[below_horizon] = 0
             KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
-                beam_weights, axis=1
-            )
+                beam_weights, axis=1)
+            if np.any(np.isnan(KK)):
+                print ("Waterfall has nans, time to die.")
+                stop()
 
     if plot:
         plt.figure()
