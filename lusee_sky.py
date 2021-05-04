@@ -1,5 +1,3 @@
-# from importlib import reload as rl
-# import xarray as xr
 import numpy as np
 import healpy as hp
 from time import time as timer
@@ -12,6 +10,7 @@ from pygdsm import GlobalSkyModel, GlobalSkyModel2016
 import spiceypy as spice
 from datetime import datetime
 from datetime import timedelta
+from scipy.interpolate import interp1d
 
 # gsm
 gsm = GlobalSkyModel()
@@ -92,7 +91,6 @@ def local_hour_from_azimuth_altitude(A_azimuth, h_altitude, phi_latitude):
         + np.sin(h_altitude) * np.cos(phi_latitude),
     )
 
-
 def declination_from_azimuth_altitude(A_azimuth, h_altitude, phi_latitude):
     return np.arcsin(
         np.sin(phi_latitude) * np.sin(h_altitude)
@@ -162,125 +160,6 @@ def get_altitude(body, times):
     )
     return body_altitude
 
-
-def get_sun_earth_from_horizon():
-    utc_times = np.arange(
-        datetime(2024, 1, 1), datetime(2024, 12, 31, 23, 59), timedelta(minutes=15)
-    ).astype(datetime)
-
-    earth_altitude = get_altitude(EARTH, utc_times)
-    sun_altitude = get_altitude(SUN, utc_times)
-
-    sun_earth_below_horizon = (earth_altitude < 0) & (sun_altitude < 0)
-    sun_earth_above_horizon = (earth_altitude > 0) & (sun_altitude > 0)
-
-    start_both_below_idxs, end_both_below_idxs = get_set_rise_idxs(
-        sun_earth_below_horizon
-    )
-    start_both_above_idxs, end_both_above_idxs = get_set_rise_idxs(
-        sun_earth_above_horizon
-    )
-
-    below_durations = utc_times[end_both_below_idxs] - utc_times[start_both_below_idxs]
-    above_durations = utc_times[end_both_above_idxs] - utc_times[start_both_above_idxs]
-
-    above_label = np.array(["above"] * start_both_above_idxs.size)
-    below_label = np.array(["below"] * start_both_below_idxs.size)
-
-    labels = np.hstack((below_label, above_label))
-    start_idxs = np.hstack((start_both_below_idxs, start_both_above_idxs))
-    end_idxs = np.hstack((end_both_below_idxs, end_both_above_idxs))
-
-    durations = np.hstack((below_durations, above_durations))
-    sort_idxs = np.argsort(start_idxs)
-
-    labels = labels[sort_idxs]
-    start_idxs = start_idxs[sort_idxs]
-    end_idxs = end_idxs[sort_idxs]
-    durations = durations[sort_idxs]
-
-    to_export2 = xr.Dataset(
-        {
-            "both above or both below horizon": (["idx"], labels),
-            "start": (["idx"], utc_times[start_idxs]),
-            "end": (["idx"], utc_times[end_idxs]),
-            "duration": (["idx"], durations),
-        }
-    )
-    with open("earth_sun_from_120_east.csv", "w") as new_file:
-        new_file.write(to_export2.to_dataframe().to_csv(index_label=""))
-
-
-def plot_inclinations_from_horizon():
-    utc_times = np.arange(
-        datetime(2024, 1, 1), datetime(2025, 12, 31, 23, 59), timedelta(minutes=15)
-    ).astype(datetime)
-
-    saturn_altitude = get_altitude(SATURN, utc_times)
-    jupiter_altitude = get_altitude(JUPITER, utc_times)
-    #     neptune_altitude = get_altitude(NEPTUNE, utc_times)
-    #     uranus_altitude = get_altitude(URANUS, utc_times)
-    sun_altitude = get_altitude(SUN, utc_times)
-
-    #     all_below_horizon = ((saturn_altitude < 0) & (jupiter_altitude < 0) & (sun_altitude < 0) & (neptune_altitude < 0) & (uranus_altitude < 0))
-    sun_jupiter_saturn_below_horizon = (
-        (saturn_altitude < 0) & (jupiter_altitude < 0) & (sun_altitude < 0)
-    )
-    sun_below_horizon = sun_altitude < 0
-    #     sun_jupiter_below_horizon = ((sun_altitude < 0) & (jupiter_altitude < 0))
-    #     ura_nep_below_horizon = ((uranus_altitude < 0) & (neptune_altitude < 0))
-    to_export = xr.Dataset(
-        {
-            "sun altitude (deg)": (["time"], sun_altitude),
-            "jupiter altitude (deg)": (["time"], jupiter_altitude),
-            "saturn altitude (deg)": (["time"], saturn_altitude),
-            "sun below horizon?": (["time"], sun_altitude < 0),
-            "jupiter below horizon?": (["time"], jupiter_altitude < 0),
-            "saturn below horizon?": (["time"], saturn_altitude < 0),
-            "all below horizon?": (["time"], sun_jupiter_saturn_below_horizon),
-        },
-        coords={"time": utc_times},
-    )
-    csv = to_export.to_dataframe().round(decimals=1).to_csv()
-    with open("schrod_basin_sun_jup_sat_visibility.csv", "w") as new_file:
-        new_file.write(csv)
-
-    for below_horizon, name, label in zip(
-        [
-            sun_below_horizon,
-            all_below_horizon,
-            sun_jupiter_below_horizon,
-            ura_nep_below_horizon,
-        ],
-        [
-            "sun_radio_quiet_times",
-            "sun_jup_sat_ura_nep_radio_quiet_times",
-            "sun_jupiter_radio_quiet_times",
-            "uranus_neptune_radio_quiet_times",
-        ],
-        [
-            "sun",
-            "sun, jupiter, saturn, uranus, neptune",
-            "sun, jupiter",
-            "uranus, neptune",
-        ],
-    ):
-        radio_quiet_start_idxs, radio_quiet_end_idxs = get_set_rise_idxs(below_horizon)
-
-        durations = utc_times[radio_quiet_end_idxs] - utc_times[radio_quiet_start_idxs]
-        to_export2 = xr.Dataset(
-            {
-                label
-                + " below horizon start": (["idx"], utc_times[radio_quiet_start_idxs]),
-                label
-                + " below horizon end": (["idx"], utc_times[radio_quiet_end_idxs]),
-                "duration": (["idx"], durations),
-            }
-        )
-        with open(name + ".csv", "w") as new_file:
-            new_file.write(to_export2.to_dataframe().to_csv(index_label=""))
-
-
 def get_set_rise_idxs(below_horizon):
     set_idxs = below_horizon & ~np.roll(below_horizon, 1)
     rise_idxs = below_horizon & ~np.roll(below_horizon, -1)
@@ -298,25 +177,6 @@ def get_set_rise_idxs(below_horizon):
         set_idxs = set_idxs[:-1]
 
     return set_idxs, rise_idxs
-
-
-def get_planet_visible(planet_code):
-    utc_times = np.arange(
-        datetime(2024, 1, 1), datetime(2024, 12, 31, 23, 59), timedelta(minutes=15)
-    ).astype(datetime)
-    altitude = get_altitude(planet_code, utc_times)
-    start_idxs, end_idxs = get_set_rise_idxs(altitude > 0)
-
-    durations = utc_times[end_idxs] - utc_times[start_idxs]
-    to_export2 = xr.Dataset(
-        {
-            "above horizon start": (["idx"], utc_times[start_idxs]),
-            "above horizon end": (["idx"], utc_times[end_idxs]),
-            "duration": (["idx"], durations),
-        }
-    )
-    return to_export2
-
 
 # print out all lunar nights that overlap with this year/month
 def print_lunar_night(year, month):
@@ -418,31 +278,25 @@ def get_beam_pixels(
     # mapping of downsampled to fullsampled pixel numbers in the 'nest' pixel numbering scheme
     ds_to_fs = np.arange(fs_map_npix).reshape(ds_map_npix, npix_ratio)
 
-    beam_weights = np.exp(
+    above_horizon = (local_vecs_ds[..., 2] > -0.05) 
+
+    beam_weights = np.zeros(local_vecs_ds.shape[:-1])
+    np.exp(
         -local_vecs_ds[..., 0] ** 2 / (2 * NS_beam_stdev ** 2)
-    ) * np.exp(-local_vecs_ds[..., 1] ** 2 / (2 * EW_beam_stdev ** 2))
-    in_beam = (local_vecs_ds[..., 2] > -0.02) & (beam_weights > beam_threshold)
-    not_in_beam_idxs = [np.flatnonzero(~in_beam_at_time) for in_beam_at_time in in_beam]
-    in_beam_idxs = [np.flatnonzero(in_beam_at_time) for in_beam_at_time in in_beam]
-    max_pixel_num = int(np.max(np.sum(in_beam, axis=1)) * npix_ratio)
-    fs_in_beam_idxs = np.zeros((utc_times.size, max_pixel_num))
-    for i, (this_in_beam, this_not_in_beam) in enumerate(
-        zip(in_beam_idxs, not_in_beam_idxs)
-    ):
-        this_pixel_num = this_in_beam.size * npix_ratio
-        fs_in_beam_idxs[i, :this_pixel_num] = hp.nest2ring(
-            fs_map_nside, ds_to_fs[this_in_beam]
-        ).flatten()
+        -local_vecs_ds[..., 1] ** 2 / (2 * EW_beam_stdev ** 2),
+        out = beam_weights,
+        where = above_horizon
+        )
 
-        # in order to have the same number of pixels at each time, add some throwaway pixels if necessary
-        fs_in_beam_idxs[i, this_pixel_num:] = hp.nest2ring(
-            fs_map_nside,
-            ds_to_fs[
-                this_not_in_beam[: (max_pixel_num - this_pixel_num) // npix_ratio]
-            ],
-        ).flatten()
+    sorted_beam_idxs = np.argsort(beam_weights, axis = 1)[:, ::-1]
+    beam_weights = np.take_along_axis(beam_weights, sorted_beam_idxs, axis = 1)
 
-    return fs_in_beam_idxs.astype(int)
+    # for einsum, want to have the same number of pixels at each time
+    num_ds_pixels_in_beam = np.max(np.sum(beam_weights > beam_threshold, axis = 1))
+    beam_idxs = sorted_beam_idxs[:, :num_ds_pixels_in_beam]
+
+    fs_in_beam_idxs = ds_to_fs[beam_idxs].reshape(-1, ds_to_fs.shape[1] * beam_idxs.shape[1])
+    return hp.nest2ring(fs_map_nside, fs_in_beam_idxs)
 
 
 # utc_times: np array of datetimes
@@ -492,7 +346,7 @@ def time_freq_K(
         # get local vecs for widest beam
         _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
         
-        below_horizon = local_vecs[..., 2] < 0
+        above_horizon = local_vecs[..., 2] > 0
         local_vecs = local_vecs ** 2
 
         for i, freq in enumerate(freqs):
@@ -502,12 +356,16 @@ def time_freq_K(
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
 
+            beam_weights = np.zeros(local_vecs.shape[:-1])
+
             # local_vecs gets squared above
-            beam_weights = np.exp(-local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)) * np.exp(
-                -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2)
+            np.exp(
+                    -local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)
+                    -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2),
+                    out = beam_weights,
+                    where = above_horizon
             )
-            # pixels that are below the horizon can't be seen
-            beam_weights[below_horizon] = 0
+
             KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
                 beam_weights, axis=1)
             if np.any(np.isnan(KK)):
@@ -530,14 +388,15 @@ def time_freq_K(
     return KK
 
 
-def drive(hours = 4, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
+def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
     sta = timer()
     utc_times = np.arange(
-        datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(hours=4)
+        datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes=minutes)
     ).astype(datetime)
     KK = time_freq_K(
         utc_times,
-        freqs=np.arange(20, 51, 1),
+        freqs=np.arange(10, 71, 10),
+#         freqs=np.arange(20, 51, 1),
         NS_20MHz_beam_stdev_degr=NS,
         EW_20MHz_beam_stdev_degr=EW,
         map_nside=nside,
@@ -545,7 +404,7 @@ def drive(hours = 4, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False
         plot = plot
     )
     sto = timer()
-    print(sto - sta)
+#     print(sto - sta)
 
 
 # utc_time: datetime
@@ -555,22 +414,35 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
     EW_beam_stdev = np.sin(EW_beam_stdev_degr * np.pi/180)
 
     utc_time = np.array([utc_time])
-    beam_idxs = get_beam_pixels(
-        utc_time, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside=map_nside
+
+    # downsampled pixel positions 
+    ds_map_nside = 64
+    _, local_vecs_ds = get_map_pixel_local_vecs(
+        utc_time, map_nside=ds_map_nside, nest=True
     )
+
+    beam_idxs = get_beam_pixels(
+        utc_time, local_vecs_ds, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside=map_nside
+    )
+
     galac_vecs, local_vecs = get_map_pixel_local_vecs(
         utc_time, beam_idxs, map_nside=map_nside, nest=False
     )
     galac_vecs = galac_vecs[0]
+    local_vecs = local_vecs[0]
 
     galac_lats, galac_lons = rec_to_lat_lon(*galac_vecs.T)
 
-    beam_weights = np.exp(
-        -local_vecs[0, :, 0] ** 2 / (2 * NS_beam_stdev ** 2)
-    ) * np.exp(-local_vecs[0, :, 1] ** 2 / (2 * EW_beam_stdev ** 2))
+    above_horizon = local_vecs[..., 2] > 0
+    beam_weights = np.zeros(local_vecs.shape[:-1])
+    np.exp(
+        -local_vecs[..., 0] ** 2 / (2 * NS_beam_stdev ** 2)
+        -local_vecs[..., 1] ** 2 / (2 * EW_beam_stdev ** 2),
+        out = beam_weights,
+        where = above_horizon
+    )
 
     # pixels that are below the horizon can't be seen
-    beam_weights[local_vecs[0, :, 2] < 0] = 0
     beam_sel = beam_weights > 0
 
     frequency = 20
@@ -608,3 +480,61 @@ def get_modes (wfall):
     cov = np.cov(mdiv,rowvar=False)
     eva,eve = np.linalg.eig(cov)
     return mean, eva, eve
+
+from scipy import optimize
+global spec_indices, mean_abs_residuals
+def low_freq_scaling():
+    global spec_indices, mean_abs_residuals
+
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    log_power_law_residual = lambda p, x, y: (y - (p[0] * x))
+
+    spec_indices = np.zeros(maps.shape[1])
+    mean_abs_residuals = np.zeros(maps.shape[1])
+    for pixel_num in range(maps.shape[1]):
+        fit = optimize.leastsq(log_power_law_residual, x0 = [-2.5], args = (logfreqs, logmaps[:, pixel_num]))
+        spec_indices[pixel_num] = fit[0][0]
+        mean_abs_residuals[pixel_num] = np.mean(np.absolute(log_power_law_residual(fit[0], logfreqs, logmaps[:, pixel_num])**2))
+
+def power_law_plot():
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    random = np.random.randint(0, maps.shape[1], 100)
+    plt.figure()
+    for num in random:
+        plt.plot(logfreqs, logmaps[:, num])
+
+    plt.xlabel(r'log($\nu$/10MHz)')
+    plt.ylabel(r'log($T/T_{10MHz}$)')
+    plt.title(r'10-15 MHz pyGDSM T vs $\nu$ for 100 random pixels')
+
+def sky_spec_indices(mask = False):
+
+    spec = spec_indices.copy()
+    resid = mean_abs_residuals.copy()
+    if mask:
+#         sel = ((spec < -3) | (spec > -2))
+        sel = (resid)**(1/2) > 0.01
+        spec[sel] = np.nan
+        resid[sel] = np.nan
+    hp.mollview((resid)**(1/2), title = 'mean absolute power law fit residuals \n frequency range: 10-15 MHz \n' + r'(mean over frequency)$\left[|\log\left(\frac{T}{T_{10MHz}}\right) - \beta_{fit}\log\left(\frac{\nu}{10MHz}\right)|\right]$' + '\n masked above 0.01')
+    hp.mollview(spec, title = 'spectral indices between 10 and 15 MHz')
+
+
+def get_signal (freq):
+    # Returns expected signal in K on the given frequency array
+    da = np.load('waterfalls/signal.npz')
+    nu = da['nu']
+    Tsig = da['Tsig']
+    return interp1d(nu,Tsig,kind='cubic')(freq)
+
+    

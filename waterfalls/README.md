@@ -1,5 +1,9 @@
 ## precomputer waterfalls
 
-# 2024, 11 lunar nights, 10-55 in 0.25 freq bins, beam Gauss 3x30
- * `https://www.dropbox.com/s/izwqpipkjc9gv9z/wfall_10.0_55.0_0.25_3.0_30.0.npz?dl=0`
+# Downloads:
+ * [10-56MHz 30x3deg](https://www.dropbox.com/s/qlvf47h02i2kfeg/wfall_10.0_56.0_0.25_3.0_30.0.npz?raw=1)
+ * [10-56MHz 3x3deg](https://www.dropbox.com/s/bfz6wjwcoc1c2ml/wfall_10.0_56.0_0.25_3.0_3.0.npz?raw=1) 
+ * [4-56MHz 3x3deg](https://www.dropbox.com/s/okacmll5mdjv162/wfall_4.0_56.0_0.25_3.0_3.0.npz?raw=1)
+
+ 
 
