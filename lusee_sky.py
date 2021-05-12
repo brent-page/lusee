@@ -512,8 +512,8 @@ def get_beam_envelope(local_vecs_sq, NS_outline, EW_outline, alpha = 0.1, points
     # factors of 2 in the denominator make this easier to work with for a gaussian beam.  If EW_outline = 3 * (beam EW stdev) and NS_outline = 3 * (beam NS stdev), then the envelope outline semi-major and semi-minor axes will be those of the beam's 3 sigma contour
     envelope_index1 = np.round( 
             np.sqrt( 
-                local_vecs_sq[..., 0] / (2 * EW_outline**2) 
-                + local_vecs_sq[..., 1] / (2 * NS_outline**2) 
+                local_vecs_sq[..., 0] / (2 * NS_outline**2) 
+                + local_vecs_sq[..., 1] / (2 * EW_outline**2) 
                 ) * points_in_envelope 
             ).astype(int)
 
