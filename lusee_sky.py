@@ -300,30 +300,24 @@ def get_beam_pixels(
 
 # utc_times: np array of datetimes
 # freqs: np array, MHz
-# outline_sigma: beam gets cut-off (or tapered) at the outline_sigma contour of the beam
 def time_freq_K(
         utc_times,
         freqs,
         NS_20MHz_beam_stdev_degr=5,
         EW_20MHz_beam_stdev_degr=5,
-        map_nside=512, 
-        time_chunk = 100,
-        outline_sigma = 3,
-        use_envelope = True,
-        plot = False, 
-        verbose=False):
+        map_nside=512, plot = False,
+        time_chunk = 100, verbose=False):
 
     NS_20MHz_beam_stdev = np.sin(NS_20MHz_beam_stdev_degr * np.pi/180)
     EW_20MHz_beam_stdev = np.sin(EW_20MHz_beam_stdev_degr * np.pi/180)
+
+    threshold = 0.01
 
     # downsampled pixel positions 
     ds_map_nside = 64
     _, local_vecs_ds = get_map_pixel_local_vecs(
         utc_times, map_nside=ds_map_nside, nest=True
     )
-
-    # find all pixels within the outline (plus a small margin) 
-    threshold = np.exp(-outline_sigma**2 / 2) * 0.9
 
     # looking at downsampled map to get an idea of which pixels to sum over
     widest_beam_idxs = get_beam_pixels(
@@ -350,8 +344,7 @@ def time_freq_K(
         _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
         
         above_horizon = local_vecs[..., 2] > 0
-        local_vecs_sq = local_vecs ** 2
-        del local_vecs
+        local_vecs = local_vecs ** 2
 
         for i, freq in enumerate(freqs):
             if verbose:
@@ -360,21 +353,15 @@ def time_freq_K(
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
 
-            beam_weights = np.zeros(local_vecs_sq.shape[:-1])
+            beam_weights = np.zeros(local_vecs.shape[:-1])
 
+            # local_vecs gets squared above
             np.exp(
-                    -local_vecs_sq[..., 0] / (2 * NS_beam_stdev ** 2)
-                    -local_vecs_sq[..., 1] / (2 * EW_beam_stdev ** 2),
+                    -local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)
+                    -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2),
                     out = beam_weights,
                     where = above_horizon
             )
-
-            if use_envelope:
-                NS_envelope_outline = outline_sigma * NS_beam_stdev
-                EW_envelope_outline = outline_sigma * EW_beam_stdev
-
-                beam_envelope = get_beam_envelope(local_vecs_sq, NS_envelope_outline, EW_envelope_outline)
-                beam_weights *= beam_envelope
 
             KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
                 beam_weights, axis=1
@@ -396,7 +383,7 @@ def time_freq_K(
     return KK
 
 
-def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
+def drive(minutes = 240, threshold = .01, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
     sta = timer()
     utc_times = np.arange(
         datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes=minutes)
@@ -489,6 +476,54 @@ def get_modes (wfall):
     eva,eve = np.linalg.eig(cov)
     return mean, eva, eve
 
+from scipy import optimize
+global spec_indices, mean_abs_residuals
+def low_freq_scaling():
+    global spec_indices, mean_abs_residuals
+
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    log_power_law_residual = lambda p, x, y: (y - (p[0] * x))
+
+    spec_indices = np.zeros(maps.shape[1])
+    mean_abs_residuals = np.zeros(maps.shape[1])
+    for pixel_num in range(maps.shape[1]):
+        fit = optimize.leastsq(log_power_law_residual, x0 = [-2.5], args = (logfreqs, logmaps[:, pixel_num]))
+        spec_indices[pixel_num] = fit[0][0]
+        mean_abs_residuals[pixel_num] = np.mean(np.absolute(log_power_law_residual(fit[0], logfreqs, logmaps[:, pixel_num])**2))
+
+def power_law_plot():
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    random = np.random.randint(0, maps.shape[1], 100)
+    plt.figure()
+    for num in random:
+        plt.plot(logfreqs, logmaps[:, num])
+
+    plt.xlabel(r'log($\nu$/10MHz)')
+    plt.ylabel(r'log($T/T_{10MHz}$)')
+    plt.title(r'10-15 MHz pyGDSM T vs $\nu$ for 100 random pixels')
+
+def sky_spec_indices(mask = False):
+
+    spec = spec_indices.copy()
+    resid = mean_abs_residuals.copy()
+    if mask:
+#         sel = ((spec < -3) | (spec > -2))
+        sel = (resid)**(1/2) > 0.01
+        spec[sel] = np.nan
+        resid[sel] = np.nan
+    hp.mollview((resid)**(1/2), title = 'mean absolute power law fit residuals \n frequency range: 10-15 MHz \n' + r'(mean over frequency)$\left[|\log\left(\frac{T}{T_{10MHz}}\right) - \beta_{fit}\log\left(\frac{\nu}{10MHz}\right)|\right]$' + '\n masked above 0.01')
+    hp.mollview(spec, title = 'spectral indices between 10 and 15 MHz')
+
 
 def get_signal (freq):
     # Returns expected signal in K on the given frequency array
@@ -498,64 +533,3 @@ def get_signal (freq):
     return interp1d(nu,Tsig,kind='cubic')(freq)
 
     
-# alpha: in an arc extending from zenith to the envelope outline, alpha approximately is the fraction of the arc occupied by the taper.  
-# points_in_taper: at minimum, should be a few times the number of timestamps it takes for a pixel to move through the taper
-def get_beam_envelope(local_vecs_sq, NS_outline, EW_outline, alpha = 0.1, points_in_taper = 500):
-
-    points_in_envelope = int( (points_in_taper) / alpha )
-    cosine_taper = 1/2 * (1 + np.cos(np.pi * np.arange(points_in_taper) / (points_in_taper - 1)) )
-
-    envelope = np.ones(points_in_envelope)
-    envelope[-points_in_taper:] = cosine_taper
-
-    # index based on where local_vec is in relation to the beam outline
-    # factors of 2 in the denominator make this easier to work with for a gaussian beam.  If EW_outline = 3 * (beam EW stdev) and NS_outline = 3 * (beam NS stdev), then the envelope outline semi-major and semi-minor axes will be those of the beam's 3 sigma contour
-    envelope_index1 = np.round( 
-            np.sqrt( 
-                local_vecs_sq[..., 0] / (2 * EW_outline**2) 
-                + local_vecs_sq[..., 1] / (2 * NS_outline**2) 
-                ) * points_in_envelope 
-            ).astype(int)
-
-    # index based on where local_vec is in relation to the horizon
-    envelope_index2 = np.round(
-            np.sqrt(
-                local_vecs_sq[..., 0] + local_vecs_sq[..., 1] 
-                ) * points_in_envelope 
-            ).astype(int)
-
-    # choose the more limiting index
-    envelope_index = np.where(envelope_index1 > envelope_index2, envelope_index1, envelope_index2)
-
-    envelope_index[envelope_index >= points_in_envelope] = points_in_envelope - 1
-
-    return envelope[envelope_index]
-
-
-global KK1, KK2
-def beam_continuity_check():
-    global KK1, KK2
-    dt_minutes = 15
-    utc_times = np.arange(datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes = dt_minutes)).astype(datetime)
-    freqs = np.array([10, 20, 40])
-
-    NS_at_20MHz = 5 # degrees
-    EW_at_20MHz = 3 # degrees
-
-#     KK1 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = True)
-#     KK2 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = False)
-
-    fft_freqs = np.fft.rfftfreq(utc_times.size, dt_minutes/60)
-    fig, axs = plt.subplots(3, sharex = True, figsize = (12, 6))
-    for KK, label in zip((KK1, KK2), ('with envelope', 'without envelope')):
-        KK_fft = np.fft.rfft(KK, axis = 0)
-        for i, freq in enumerate(freqs):
-            axs[i].plot(fft_freqs, np.absolute(KK_fft[:, i])/np.mean(KK[:, i]), label = label)
-
-    for ax in axs:
-        ax.legend()
-        ax.set_yscale('log')
-#     axs[0].set_xlim(1.75, 2)
-    axs[-1].set_xlabel('Freq (1/Hr)')
-
-
