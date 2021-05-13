@@ -310,6 +310,8 @@ def time_freq_K(
         time_chunk = 100,
         outline_sigma = 3,
         use_envelope = True,
+        taper_alpha = 0.1,
+        horizon_taper = 5,
         plot = False, 
         verbose=False):
 
@@ -323,7 +325,7 @@ def time_freq_K(
     )
 
     # find all pixels within the outline (plus a small margin) 
-    threshold = np.exp(-outline_sigma**2 / 2) * 0.9
+    threshold = np.exp(-outline_sigma**2 / 2) * 0.8
 
     # looking at downsampled map to get an idea of which pixels to sum over
     widest_beam_idxs = get_beam_pixels(
@@ -338,6 +340,8 @@ def time_freq_K(
     skymaps = gsm.generate(freqs)
     if not (map_nside == hp.get_nside(skymaps)):
         skymaps = hp.ud_grade(skymaps, map_nside)
+    if (freqs.size == 1):
+        skymaps = skymaps[None, :]
 
     KK = np.zeros((utc_times.size, freqs.size))
 
@@ -369,14 +373,17 @@ def time_freq_K(
                     where = above_horizon
             )
 
+#             beam_weights[beam_weights < threshold] = np.nan
+            beam_weights[beam_weights < np.exp(-outline_sigma**2 / 2)] = np.nan
+
             if use_envelope:
                 NS_envelope_outline = outline_sigma * NS_beam_stdev
                 EW_envelope_outline = outline_sigma * EW_beam_stdev
 
-                beam_envelope = get_beam_envelope(local_vecs_sq, NS_envelope_outline, EW_envelope_outline)
+                beam_envelope = get_beam_envelope(local_vecs_sq, NS_envelope_outline, EW_envelope_outline, alpha = taper_alpha, horizon_taper = horizon_taper)
                 beam_weights *= beam_envelope
 
-            KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
+            KK[ti_start:ti_end, i] = np.nansum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.nansum(
                 beam_weights, axis=1
             )
 
@@ -416,7 +423,7 @@ def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = F
 
 
 # utc_time: datetime
-def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, threshold = 0.01):
+def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, outline_sigma = 3, use_envelope = False, taper_alpha = 0.1, horizon_taper = 5):
 
     NS_beam_stdev = np.sin(NS_beam_stdev_degr * np.pi/180)
     EW_beam_stdev = np.sin(EW_beam_stdev_degr * np.pi/180)
@@ -429,6 +436,8 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
         utc_time, map_nside=ds_map_nside, nest=True
     )
 
+    threshold = np.exp(-outline_sigma**2 / 2)
+
     beam_idxs = get_beam_pixels(
         utc_time, local_vecs_ds, NS_beam_stdev, EW_beam_stdev, threshold, fs_map_nside=map_nside
     )
@@ -436,6 +445,7 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
     galac_vecs, local_vecs = get_map_pixel_local_vecs(
         utc_time, beam_idxs, map_nside=map_nside, nest=False
     )
+
     galac_vecs = galac_vecs[0]
     local_vecs = local_vecs[0]
 
@@ -449,9 +459,12 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
         out = beam_weights,
         where = above_horizon
     )
+    if use_envelope:
+        NS_envelope_outline = outline_sigma * NS_beam_stdev
+        EW_envelope_outline = outline_sigma * EW_beam_stdev
 
-    # pixels that are below the horizon can't be seen
-    beam_sel = beam_weights > 0
+        beam_envelope = get_beam_envelope(local_vecs ** 2, NS_envelope_outline, EW_envelope_outline, alpha = taper_alpha, horizon_taper = horizon_taper)
+        beam_weights *= beam_envelope
 
     frequency = 20
     skymap = gsm.generate(frequency)
@@ -464,10 +477,10 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
         title="{} {:.0f} MHz, basemap: {}".format(gsm.name, frequency, gsm.basemap),
     )
     hp.projscatter(
-        theta=np.pi / 2 - galac_lats[beam_sel],
-        phi=galac_lons[beam_sel],
+        theta=np.pi / 2 - galac_lats,
+        phi=galac_lons,
         lonlat=False,
-        c=beam_weights[beam_sel],
+        c=beam_weights,
         cmap=plt.cm.Blues,
         s=0.01 * (512 / map_nside) ** 2,
     )
@@ -498,64 +511,110 @@ def get_signal (freq):
     return interp1d(nu,Tsig,kind='cubic')(freq)
 
     
-# alpha: in an arc extending from zenith to the envelope outline, alpha approximately is the fraction of the arc occupied by the taper.  
+# alpha: in an arc extending from zenith to the envelope outline, alpha approximately is the fraction of the arc occupied by the taper (in the case that the beam doesn't reach the horizon)
+# horizon_taper (degrees): taper width in the case that the beam reaches the horizon
 # points_in_taper: at minimum, should be a few times the number of timestamps it takes for a pixel to move through the taper
-def get_beam_envelope(local_vecs_sq, NS_outline, EW_outline, alpha = 0.1, points_in_taper = 500):
+def get_beam_envelope(local_vecs_sq, NS_outline, EW_outline, alpha = 0.1, horizon_taper = 5, points_in_taper = 500):
 
-    points_in_envelope = int( (points_in_taper) / alpha )
+    horizon_alpha = horizon_taper/90
+
+    points_in_beam_envelope = int( (points_in_taper) / alpha )
+    points_in_horizon_envelope = int( (points_in_taper) / horizon_alpha )
     cosine_taper = 1/2 * (1 + np.cos(np.pi * np.arange(points_in_taper) / (points_in_taper - 1)) )
 
-    envelope = np.ones(points_in_envelope)
-    envelope[-points_in_taper:] = cosine_taper
+    beam_envelope = np.ones(points_in_beam_envelope)
+    horizon_envelope = np.ones(points_in_horizon_envelope)
+
+    beam_envelope[-points_in_taper:] = cosine_taper
+    horizon_envelope[-points_in_taper:] = cosine_taper
 
     # index based on where local_vec is in relation to the beam outline
-    # factors of 2 in the denominator make this easier to work with for a gaussian beam.  If EW_outline = 3 * (beam EW stdev) and NS_outline = 3 * (beam NS stdev), then the envelope outline semi-major and semi-minor axes will be those of the beam's 3 sigma contour
-    envelope_index1 = np.round( 
+    # if EW_outline = 3 * (beam EW stdev) and NS_outline = 3 * (beam NS stdev), then the envelope outline will be the beam's 3 sigma contour (strength = exp(-3**2 / 2))
+    beam_envelope_index = np.round( 
             np.sqrt( 
-                local_vecs_sq[..., 0] / (2 * NS_outline**2) 
-                + local_vecs_sq[..., 1] / (2 * EW_outline**2) 
-                ) * points_in_envelope 
+                local_vecs_sq[..., 0] / (NS_outline**2) 
+                + local_vecs_sq[..., 1] / (EW_outline**2) 
+                ) * (points_in_beam_envelope - 1)
             ).astype(int)
 
     # index based on where local_vec is in relation to the horizon
-    envelope_index2 = np.round(
-            np.sqrt(
-                local_vecs_sq[..., 0] + local_vecs_sq[..., 1] 
-                ) * points_in_envelope 
+    horizon_envelope_index = np.round(
+            np.arcsin(
+                np.sqrt(
+                    local_vecs_sq[..., 0] + local_vecs_sq[..., 1] 
+                    )
+                ) / (np.pi / 2) * (points_in_horizon_envelope - 1)
             ).astype(int)
 
-    # choose the more limiting index
-    envelope_index = np.where(envelope_index1 > envelope_index2, envelope_index1, envelope_index2)
+    beam_envelope_index[beam_envelope_index >= points_in_beam_envelope] = points_in_beam_envelope - 1
+    beam_envelope_vals = beam_envelope[beam_envelope_index]
 
-    envelope_index[envelope_index >= points_in_envelope] = points_in_envelope - 1
+    horizon_envelope_vals = horizon_envelope[horizon_envelope_index]
 
-    return envelope[envelope_index]
+    # choose the more limiting taper
+    return np.where(beam_envelope_vals < horizon_envelope_vals, beam_envelope_vals, horizon_envelope_vals)
 
 
 global KK1, KK2
 def beam_continuity_check():
     global KK1, KK2
     dt_minutes = 15
-    utc_times = np.arange(datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes = dt_minutes)).astype(datetime)
-    freqs = np.array([10, 20, 40])
+    utc_times = np.arange(datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes = dt_minutes)).astype(datetime)[940:970]
+    freqs = np.array([20])
 
     NS_at_20MHz = 5 # degrees
     EW_at_20MHz = 3 # degrees
 
-#     KK1 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = True)
-#     KK2 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = False)
+    KK1 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = True, verbose = True, taper_alpha = .1, horizon_taper = 5, outline_sigma = 3)
+    KK2 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = False, verbose = True, outline_sigma = 3)
 
-    fft_freqs = np.fft.rfftfreq(utc_times.size, dt_minutes/60)
-    fig, axs = plt.subplots(3, sharex = True, figsize = (12, 6))
-    for KK, label in zip((KK1, KK2), ('with envelope', 'without envelope')):
-        KK_fft = np.fft.rfft(KK, axis = 0)
-        for i, freq in enumerate(freqs):
-            axs[i].plot(fft_freqs, np.absolute(KK_fft[:, i])/np.mean(KK[:, i]), label = label)
+    KK1 -= np.mean(KK1)
+    KK2 -= np.mean(KK2)
+
+#     fft_freqs = np.fft.rfftfreq(utc_times.size, dt_minutes/60)
+#     fig, axs = plt.subplots(3, sharex = True, figsize = (12, 6))
+#     for KK, label in zip((KK1, KK2), ('with envelope', 'without envelope')):
+#         KK_fft = np.fft.rfft(KK, axis = 0)
+#         for i, freq in enumerate(freqs):
+#             axs[i].plot(fft_freqs, np.absolute(KK_fft[:, i])/np.mean(KK[:, i]), label = label)
+# 
+#     for ax in axs:
+#         ax.legend()
+#         ax.set_yscale('log')
+#     axs[0].set_xlim(1.75, 2)
+#     axs[-1].set_xlabel('Freq (1/Hr)')
+
+
+def plot_enveloped_beam(NS, EW, outline_sigma, taper_alpha, horizon_taper):
+    NS = np.sin(NS * np.pi/180)
+    EW = np.sin(EW * np.pi/180)
+
+    x = np.linspace(-1, 1, 1000)
+    y = np.linspace(-1, 1, 1000)
+    X, Y = np.meshgrid(x, y)
+
+    norm = np.sqrt(X**2 + Y**2)
+
+    X[norm > 1]/= norm[norm > 1] * 1.0001
+    Y[norm > 1]/= norm[norm > 1] * 1.0001
+
+    flat_coords = np.zeros((X.size, 2))
+    flat_coords[:, 0] = X.flatten()
+    flat_coords[:, 1] = Y.flatten()
+
+    beam_weights = np.exp(
+            -X**2 / (2 * NS**2)
+            -Y**2 / (2 * EW**2)
+            )
+    beam_envelope = get_beam_envelope(flat_coords**2, NS * outline_sigma, EW * outline_sigma, alpha = taper_alpha, horizon_taper = horizon_taper).reshape(-1, x.size)
+
+    fig, axs = plt.subplots(1, 3, figsize = (15, 5))
+    axs[0].pcolormesh(X, Y, beam_weights, shading = 'nearest')
+    axs[1].pcolormesh(X, Y, beam_envelope, shading = 'nearest')
+    axs[2].pcolormesh(X, Y, beam_weights * beam_envelope, shading = 'nearest')
 
     for ax in axs:
-        ax.legend()
-        ax.set_yscale('log')
-#     axs[0].set_xlim(1.75, 2)
-    axs[-1].set_xlabel('Freq (1/Hr)')
+        ax.set_aspect('equal')
+
 
 
