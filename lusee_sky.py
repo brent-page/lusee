@@ -325,7 +325,7 @@ def time_freq_K(
         local_vecs_ds,
         NS_20MHz_beam_stdev * (20/freqs.min()),
         EW_20MHz_beam_stdev * (20/freqs.min()),
-        threshold,
+        threshold * 0.8,
         fs_map_nside=map_nside,
     )
 
@@ -362,8 +362,9 @@ def time_freq_K(
                     out = beam_weights,
                     where = above_horizon
             )
+            beam_weights[beam_weights < threshold] = np.nan
 
-            KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
+            KK[ti_start:ti_end, i] = np.nansum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.nansum(
                 beam_weights, axis=1
             )
 
@@ -381,6 +382,20 @@ def time_freq_K(
         )
 
     return KK
+
+
+def create_reference():
+    utc_times = np.array([datetime(2024, 3, 21, 21), datetime(2024, 3, 22, 21)]).astype(datetime)
+    KK = time_freq_K(
+        utc_times,
+        freqs=np.arange(10, 16, 5),
+        NS_20MHz_beam_stdev_degr=5,
+        EW_20MHz_beam_stdev_degr=5,
+        map_nside=512,
+    )
+    return KK
+#     np.savez('waterfall_ref.npz', KK = KK)
+
 
 
 def drive(minutes = 240, threshold = .01, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
