@@ -324,8 +324,8 @@ def time_freq_K(
         utc_times, map_nside=ds_map_nside, nest=True
     )
 
-    # find all pixels within the outline (plus a small margin) 
-    threshold = np.exp(-outline_sigma**2 / 2) * 0.8
+    # find all pixels within the outline
+    threshold = np.exp(-outline_sigma**2 / 2)
 
     # looking at downsampled map to get an idea of which pixels to sum over
     widest_beam_idxs = get_beam_pixels(
@@ -333,7 +333,7 @@ def time_freq_K(
         local_vecs_ds,
         NS_20MHz_beam_stdev * (20/freqs.min()),
         EW_20MHz_beam_stdev * (20/freqs.min()),
-        threshold,
+        threshold * 0.8,
         fs_map_nside=map_nside,
     )
 
@@ -373,8 +373,7 @@ def time_freq_K(
                     where = above_horizon
             )
 
-#             beam_weights[beam_weights < threshold] = np.nan
-            beam_weights[beam_weights < np.exp(-outline_sigma**2 / 2)] = np.nan
+            beam_weights[beam_weights < threshold] = np.nan
 
             if use_envelope:
                 NS_envelope_outline = outline_sigma * NS_beam_stdev
@@ -401,6 +400,19 @@ def time_freq_K(
         )
 
     return KK
+
+def create_reference():
+    utc_times = np.array([datetime(2024, 3, 21, 21), datetime(2024, 3, 22, 21)]).astype(datetime)
+    KK = time_freq_K(
+        utc_times,
+        freqs=np.arange(10, 16, 5),
+        NS_20MHz_beam_stdev_degr=5,
+        EW_20MHz_beam_stdev_degr=5,
+        map_nside=512,
+        use_envelope = False
+    )
+    return KK
+#     np.savez('waterfall_ref.npz', KK = KK)
 
 
 def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
