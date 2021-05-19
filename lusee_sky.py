@@ -300,7 +300,6 @@ def get_beam_pixels(
 
 # utc_times: np array of datetimes
 # freqs: np array, MHz
-# outline_sigma: beam gets cut-off (or tapered) at the outline_sigma contour of the beam
 def time_freq_K(
         utc_times,
         freqs,
@@ -318,6 +317,8 @@ def time_freq_K(
 
     NS_20MHz_beam_stdev = np.sin(NS_20MHz_beam_stdev_degr * np.pi/180)
     EW_20MHz_beam_stdev = np.sin(EW_20MHz_beam_stdev_degr * np.pi/180)
+
+    threshold = 0.01
 
     # downsampled pixel positions 
     ds_map_nside = 64
@@ -357,8 +358,7 @@ def time_freq_K(
         _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
         
         above_horizon = local_vecs[..., 2] > 0
-        local_vecs_sq = local_vecs ** 2
-        del local_vecs
+        local_vecs = local_vecs ** 2
 
         for i, freq in enumerate(freqs):
             if verbose:
@@ -367,15 +367,15 @@ def time_freq_K(
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
 
-            beam_weights = np.zeros(local_vecs_sq.shape[:-1])
+            beam_weights = np.zeros(local_vecs.shape[:-1])
 
+            # local_vecs gets squared above
             np.exp(
-                    -local_vecs_sq[..., 0] / (2 * NS_beam_stdev ** 2)
-                    -local_vecs_sq[..., 1] / (2 * EW_beam_stdev ** 2),
+                    -local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)
+                    -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2),
                     out = beam_weights,
                     where = above_horizon
             )
-
             beam_weights[beam_weights < threshold] = np.nan
 
             if use_envelope:
@@ -421,7 +421,21 @@ def create_reference():
 #     np.savez('waterfall_ref.npz', KK = KK)
 
 
-def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
+def create_reference():
+    utc_times = np.array([datetime(2024, 3, 21, 21), datetime(2024, 3, 22, 21)]).astype(datetime)
+    KK = time_freq_K(
+        utc_times,
+        freqs=np.arange(10, 16, 5),
+        NS_20MHz_beam_stdev_degr=5,
+        EW_20MHz_beam_stdev_degr=5,
+        map_nside=512,
+    )
+    return KK
+#     np.savez('waterfall_ref.npz', KK = KK)
+
+
+
+def drive(minutes = 240, threshold = .01, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
     sta = timer()
     utc_times = np.arange(
         datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes=minutes)
@@ -520,6 +534,10 @@ def get_modes (wfall):
     eva,eve = np.linalg.eig(cov)
     return mean, eva, eve
 
+from scipy import optimize
+global spec_indices, mean_abs_residuals
+def low_freq_scaling():
+    global spec_indices, mean_abs_residuals
 
 def get_signal (freq):
     # Returns expected signal in K on the given frequency array
@@ -579,10 +597,36 @@ def beam_continuity_check():
     global KK1, KK2
     dt_minutes = 15
     utc_times = np.arange(datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes = dt_minutes)).astype(datetime)[940:970]
-    freqs = np.array([20])
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
 
-    NS_at_20MHz = 5 # degrees
-    EW_at_20MHz = 3 # degrees
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    log_power_law_residual = lambda p, x, y: (y - (p[0] * x))
+
+    spec_indices = np.zeros(maps.shape[1])
+    mean_abs_residuals = np.zeros(maps.shape[1])
+    for pixel_num in range(maps.shape[1]):
+        fit = optimize.leastsq(log_power_law_residual, x0 = [-2.5], args = (logfreqs, logmaps[:, pixel_num]))
+        spec_indices[pixel_num] = fit[0][0]
+        mean_abs_residuals[pixel_num] = np.mean(np.absolute(log_power_law_residual(fit[0], logfreqs, logmaps[:, pixel_num])**2))
+
+def power_law_plot():
+    freqs = np.arange(10, 15, .1)
+    maps = gsm.generate(freqs)
+
+    logmaps = np.log(maps/maps[0])
+    logfreqs = np.log(freqs/freqs[0])
+
+    random = np.random.randint(0, maps.shape[1], 100)
+    plt.figure()
+    for num in random:
+        plt.plot(logfreqs, logmaps[:, num])
+
+    plt.xlabel(r'log($\nu$/10MHz)')
+    plt.ylabel(r'log($T/T_{10MHz}$)')
+    plt.title(r'10-15 MHz pyGDSM T vs $\nu$ for 100 random pixels')
 
     KK1 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = True, verbose = True, taper_alpha = .1, horizon_taper = 5, outline_sigma = 3)
     KK2 = time_freq_K(utc_times, freqs, NS_at_20MHz, EW_at_20MHz, 512, use_envelope = False, verbose = True, outline_sigma = 3)
@@ -636,4 +680,24 @@ def plot_enveloped_beam(NS, EW, outline_sigma, taper_alpha, horizon_taper):
         ax.set_aspect('equal')
 
 
+def sky_spec_indices(mask = False):
 
+    spec = spec_indices.copy()
+    resid = mean_abs_residuals.copy()
+    if mask:
+#         sel = ((spec < -3) | (spec > -2))
+        sel = (resid)**(1/2) > 0.01
+        spec[sel] = np.nan
+        resid[sel] = np.nan
+    hp.mollview((resid)**(1/2), title = 'mean absolute power law fit residuals \n frequency range: 10-15 MHz \n' + r'(mean over frequency)$\left[|\log\left(\frac{T}{T_{10MHz}}\right) - \beta_{fit}\log\left(\frac{\nu}{10MHz}\right)|\right]$' + '\n masked above 0.01')
+    hp.mollview(spec, title = 'spectral indices between 10 and 15 MHz')
+
+
+def get_signal (freq):
+    # Returns expected signal in K on the given frequency array
+    da = np.load('waterfalls/signal.npz')
+    nu = da['nu']
+    Tsig = da['Tsig']
+    return interp1d(nu,Tsig,kind='cubic')(freq)
+
+    
