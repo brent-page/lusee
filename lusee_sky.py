@@ -555,14 +555,15 @@ def get_beam_envelope(local_vecs_sq, NS_outline, EW_outline, alpha = 0.1, horizo
                 ) * (points_in_beam_envelope - 1)
             ).astype(int)
 
+    def not_more_than_one(x):
+        x[x>1.0] = 1.0
+        return x
     # index based on where local_vec is in relation to the horizon
     horizon_envelope_index = np.round(
             np.arcsin(
-                np.sqrt(
-                    local_vecs_sq[..., 0] + local_vecs_sq[..., 1] 
-                    )
+                not_more_than_one(np.sqrt(local_vecs_sq[..., 0] + local_vecs_sq[..., 1])
                 ) / (np.pi / 2) * (points_in_horizon_envelope - 1)
-            ).astype(int)
+            )).astype(int)
 
     beam_envelope_index[beam_envelope_index >= points_in_beam_envelope] = points_in_beam_envelope - 1
     beam_envelope_vals = beam_envelope[beam_envelope_index]
