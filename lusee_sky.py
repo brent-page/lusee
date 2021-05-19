@@ -13,7 +13,7 @@ from datetime import timedelta
 from scipy.interpolate import interp1d
 
 # gsm
-gsm = GlobalSkyModel()
+gsm = GlobalSkyModel(interpolation = 'cubic')
 gsm16 = GlobalSkyModel2016()
 
 
@@ -307,7 +307,7 @@ def time_freq_K(
         NS_20MHz_beam_stdev_degr=5,
         EW_20MHz_beam_stdev_degr=5,
         map_nside=512, plot = False,
-        time_chunk = 100, verbose=False):
+        time_chunk = 100, verbose=False, widest_beam_freq=4):
 
     NS_20MHz_beam_stdev = np.sin(NS_20MHz_beam_stdev_degr * np.pi/180)
     EW_20MHz_beam_stdev = np.sin(EW_20MHz_beam_stdev_degr * np.pi/180)
@@ -324,8 +324,8 @@ def time_freq_K(
     widest_beam_idxs = get_beam_pixels(
         utc_times,
         local_vecs_ds,
-        NS_20MHz_beam_stdev * (20/freqs.min()),
-        EW_20MHz_beam_stdev * (20/freqs.min()),
+        NS_20MHz_beam_stdev * (20/widest_beam_freq),
+        EW_20MHz_beam_stdev * (20/widest_beam_freq),
         threshold,
         fs_map_nside=map_nside,
     )
