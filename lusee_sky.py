@@ -306,6 +306,7 @@ def time_freq_K(
         freqs,
         NS_20MHz_beam_stdev_degr=5,
         EW_20MHz_beam_stdev_degr=5,
+        widest_beam_freq=4,
         map_nside=512, 
         time_chunk = 100,
         outline_sigma = 3,
@@ -331,13 +332,15 @@ def time_freq_K(
     widest_beam_idxs = get_beam_pixels(
         utc_times,
         local_vecs_ds,
-        NS_20MHz_beam_stdev * (20/freqs.min()),
-        EW_20MHz_beam_stdev * (20/freqs.min()),
+        NS_20MHz_beam_stdev * (20/widest_beam_freq),
+        EW_20MHz_beam_stdev * (20/widest_beam_freq),
         threshold * 0.8,
         fs_map_nside=map_nside,
     )
 
     skymaps = gsm.generate(freqs)
+    if verbose:
+        print ("Generated maps nside = ", hp.get_nside(skymaps))
     if not (map_nside == hp.get_nside(skymaps)):
         skymaps = hp.ud_grade(skymaps, map_nside)
     if (freqs.size == 1):
@@ -359,7 +362,7 @@ def time_freq_K(
 
         for i, freq in enumerate(freqs):
             if verbose:
-                print (f" Averaging sky at {freq}MHz...")
+                print (f" Integrating sky at {freq}MHz...")
 
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
@@ -383,8 +386,11 @@ def time_freq_K(
                 beam_weights *= beam_envelope
 
             KK[ti_start:ti_end, i] = np.nansum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.nansum(
-                beam_weights, axis=1
-            )
+                beam_weights, axis=1)
+
+            if np.any(np.isnan(KK)):
+                print ("Waterfall has nans, time to die.")
+                stop()
 
     if plot:
         plt.figure()
