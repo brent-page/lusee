@@ -364,10 +364,10 @@ def time_freq_K(
                     out = beam_weights,
                     where = above_horizon
             )
-            beam_weights[beam_weights < threshold] = np.nan
+            above_threshold = beam_weights > threshold
 
-            KK[ti_start:ti_end, i] = np.nansum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.nansum(
-                beam_weights, axis=1)
+            KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, where = above_threshold, axis=1) / np.sum(
+                beam_weights, where = above_threshold, axis=1)
             if np.any(np.isnan(KK)):
                 print ("Waterfall has nans, time to die.")
                 stop()
