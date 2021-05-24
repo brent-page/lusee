@@ -300,6 +300,7 @@ def get_beam_pixels(
 
 # utc_times: np array of datetimes
 # freqs: np array, MHz
+# outline_sigma: beam gets cut-off (or tapered) at the outline_sigma contour of the beam
 def time_freq_K(
         utc_times,
         freqs,
@@ -317,8 +318,6 @@ def time_freq_K(
 
     NS_20MHz_beam_stdev = np.sin(NS_20MHz_beam_stdev_degr * np.pi/180)
     EW_20MHz_beam_stdev = np.sin(EW_20MHz_beam_stdev_degr * np.pi/180)
-
-    threshold = 0.01
 
     # downsampled pixel positions 
     ds_map_nside = 64
@@ -358,7 +357,8 @@ def time_freq_K(
         _, local_vecs = get_map_pixel_local_vecs(utc_times[ti_start:ti_end], widest_beam_idxs[ti_start:ti_end,:], map_nside)
         
         above_horizon = local_vecs[..., 2] > 0
-        local_vecs = local_vecs ** 2
+        local_vecs_sq = local_vecs ** 2
+        del local_vecs
 
         for i, freq in enumerate(freqs):
             if verbose:
@@ -367,12 +367,12 @@ def time_freq_K(
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
 
-            beam_weights = np.zeros(local_vecs.shape[:-1])
+            beam_weights = np.zeros(local_vecs_sq.shape[:-1])
 
             # local_vecs gets squared above
             np.exp(
-                    -local_vecs[..., 0] / (2 * NS_beam_stdev ** 2)
-                    -local_vecs[..., 1] / (2 * EW_beam_stdev ** 2),
+                    -local_vecs_sq[..., 0] / (2 * NS_beam_stdev ** 2)
+                    -local_vecs_sq[..., 1] / (2 * EW_beam_stdev ** 2),
                     out = beam_weights,
                     where = above_horizon
             )
@@ -534,11 +534,6 @@ def get_modes (wfall):
     eva,eve = np.linalg.eig(cov)
     return mean, eva, eve
 
-from scipy import optimize
-global spec_indices, mean_abs_residuals
-def low_freq_scaling():
-    global spec_indices, mean_abs_residuals
-
 def get_signal (freq):
     # Returns expected signal in K on the given frequency array
     da = np.load('waterfalls/signal.npz')
@@ -574,14 +569,16 @@ def get_beam_envelope(local_vecs_sq, NS_outline, EW_outline, alpha = 0.1, horizo
             ).astype(int)
 
     def not_more_than_one(x):
-        x[x>1.0] = 1.0
+        x[x > 1.0] = 1.0
         return x
     # index based on where local_vec is in relation to the horizon
-    horizon_envelope_index = np.round(
+    horizon_envelope_index = np.rint(
             np.arcsin(
-                not_more_than_one(np.sqrt(local_vecs_sq[..., 0] + local_vecs_sq[..., 1])
+                not_more_than_one(
+                    np.sqrt(local_vecs_sq[..., 0] + local_vecs_sq[..., 1])
+                    )
                 ) / (np.pi / 2) * (points_in_horizon_envelope - 1)
-            )).astype(int)
+            ).astype(int)
 
     beam_envelope_index[beam_envelope_index >= points_in_beam_envelope] = points_in_beam_envelope - 1
     beam_envelope_vals = beam_envelope[beam_envelope_index]
