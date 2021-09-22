@@ -461,9 +461,11 @@ def plot_beam(utc_time, NS_beam_stdev_degr, EW_beam_stdev_degr, map_nside=512, t
     )
 
 
-def get_delta_T (utc_times, frequency, wfall, return_inv2 = False):
-    deltaT = ((utc_times[-1]-utc_times[0])/(len(utc_times)-1)).seconds
-    deltaf = (frequency[-1]-frequency[0])/(len(frequency)-1)
+def get_delta_T (utc_times, frequency, wfall, return_inv2 = False, deltaT = None, deltaf = None):
+    if deltaT is None:
+        deltaT = ((utc_times[-1]-utc_times[0])/(len(utc_times)-1)).seconds
+    if deltaf is None:
+        deltaf = (frequency[-1]-frequency[0])/(len(frequency)-1)
     #print (f"Delta T: {deltaT} Delta f: {deltaf}MHz")
     inv2 = ((deltaf*1e6)*deltaT/wfall**2).sum(axis=0)
     if return_inv2:
