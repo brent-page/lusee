@@ -13,7 +13,7 @@ from datetime import timedelta
 from scipy.interpolate import interp1d
 
 # gsm
-gsm = GlobalSkyModel()
+gsm = GlobalSkyModel(interpolation = 'cubic')
 gsm16 = GlobalSkyModel2016()
 
 
@@ -246,21 +246,20 @@ def get_map_pixel_local_vecs(utc_times, beam_idxs=None, map_nside=512, nest=Fals
         galactic_to_moon_rots[i] = spice.pxform(
             "GALACTIC", "MOON_ME", spice.datetime2et(time)
         )
-    galactic_to_local_rots = np.einsum(
-        "ij,kjl->kil", local_to_moon_coords.T, galactic_to_moon_rots
-    )
 
     galac_vecs = np.stack(
         hp.pix2vec(map_nside, np.arange(hp.nside2npix(map_nside)), nest=nest)
     ).T
 
     if not (beam_idxs is None):
-        # transform a different set of pixel positions for each time
         galac_vecs = galac_vecs[beam_idxs]
-        local_vecs = np.einsum("ijk,ilk->ilj", galactic_to_local_rots, galac_vecs)
+        # transform a different set of pixel positions for each time
+        # t: time, p: pixel
+        local_vecs = np.einsum("ij,tjl,tpl->tpi", local_to_moon_coords.T, galactic_to_moon_rots, galac_vecs)
+        
     else:
         # transform the positions of all pixels for each time
-        local_vecs = np.einsum("ijk,lk->ilj", galactic_to_local_rots, galac_vecs)
+        local_vecs = np.einsum("ij,tjl,pl->tpi", local_to_moon_coords.T, galactic_to_moon_rots, galac_vecs)
 
     return galac_vecs, local_vecs
 
@@ -307,7 +306,7 @@ def time_freq_K(
         NS_20MHz_beam_stdev_degr=5,
         EW_20MHz_beam_stdev_degr=5,
         map_nside=512, plot = False,
-        time_chunk = 100, verbose=False):
+        time_chunk = 100, verbose=False, widest_beam_freq=4):
 
     NS_20MHz_beam_stdev = np.sin(NS_20MHz_beam_stdev_degr * np.pi/180)
     EW_20MHz_beam_stdev = np.sin(EW_20MHz_beam_stdev_degr * np.pi/180)
@@ -324,13 +323,15 @@ def time_freq_K(
     widest_beam_idxs = get_beam_pixels(
         utc_times,
         local_vecs_ds,
-        NS_20MHz_beam_stdev * (20/freqs.min()),
-        EW_20MHz_beam_stdev * (20/freqs.min()),
-        threshold,
+        NS_20MHz_beam_stdev * (20/widest_beam_freq),
+        EW_20MHz_beam_stdev * (20/widest_beam_freq),
+        threshold * 0.8,
         fs_map_nside=map_nside,
     )
 
     skymaps = gsm.generate(freqs)
+    if verbose:
+        print ("Generated maps nside = ", hp.get_nside(skymaps))
     if not (map_nside == hp.get_nside(skymaps)):
         skymaps = hp.ud_grade(skymaps, map_nside)
 
@@ -349,7 +350,7 @@ def time_freq_K(
 
         for i, freq in enumerate(freqs):
             if verbose:
-                print (f" Averaging sky at {freq}MHz...")
+                print (f" Integrating sky at {freq}MHz...")
 
             NS_beam_stdev = NS_20MHz_beam_stdev * 20/freq
             EW_beam_stdev = EW_20MHz_beam_stdev * 20/freq
@@ -363,10 +364,13 @@ def time_freq_K(
                     out = beam_weights,
                     where = above_horizon
             )
+            above_threshold = beam_weights > threshold
 
-            KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, axis=1) / np.sum(
-                beam_weights, axis=1
-            )
+            KK[ti_start:ti_end, i] = np.sum(skymaps[i, widest_beam_idxs[ti_start:ti_end]] * beam_weights, where = above_threshold, axis=1) / np.sum(
+                beam_weights, where = above_threshold, axis=1)
+            if np.any(np.isnan(KK)):
+                print ("Waterfall has nans, time to die.")
+                stop()
 
     if plot:
         plt.figure()
@@ -384,15 +388,29 @@ def time_freq_K(
     return KK
 
 
-def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
+def create_reference():
+    utc_times = np.array([datetime(2024, 3, 21, 21), datetime(2024, 3, 22, 21)]).astype(datetime)
+    KK = time_freq_K(
+        utc_times,
+        freqs=np.arange(10, 16, 5),
+        NS_20MHz_beam_stdev_degr=5,
+        EW_20MHz_beam_stdev_degr=5,
+        map_nside=512,
+    )
+    return KK
+#     np.savez('waterfall_ref.npz', KK = KK)
+
+
+
+def drive(minutes = 240, threshold = .01, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = False):
     sta = timer()
     utc_times = np.arange(
         datetime(2024, 3, 21, 21), datetime(2024, 4, 5, 11), timedelta(minutes=minutes)
     ).astype(datetime)
     KK = time_freq_K(
         utc_times,
-        freqs=np.arange(10, 71, 10),
-#         freqs=np.arange(20, 51, 1),
+#         freqs=np.arange(10, 71, 10),
+        freqs=np.arange(20, 50, .5),
         NS_20MHz_beam_stdev_degr=NS,
         EW_20MHz_beam_stdev_degr=EW,
         map_nside=nside,
@@ -400,7 +418,7 @@ def drive(minutes = 240, NS = 60, EW = 5, nside = 128, time_chunk = 20, plot = F
         plot = plot
     )
     sto = timer()
-#     print(sto - sta)
+    print(sto - sta)
 
 
 # utc_time: datetime
