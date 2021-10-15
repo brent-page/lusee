@@ -153,12 +153,19 @@ def get_pos(body, times, ref = "MOON_ME"):
     return body_pos
 
 
-def get_altitude(body, times):
-    body_pos = get_pos(body, times)
-    body_altitude = (
-        90 - np.arccos(np.matmul(body_pos, SCHROD_OUTWARD_NORMAL)) * 180 / np.pi
-    )
+def get_altitude(body, times, normal = SCHROD_OUTWARD_NORMAL):
+    body_altitude =  90 - np.arccos(get_body_cosine(body, times, normal)) * 180 / np.pi
     return body_altitude
+
+def get_body_cosine (body, times, normal = SCHROD_OUTWARD_NORMAL):
+    ## we could use just cos of altitute, but this is even more braindead
+    body_pos = get_pos(SUN, times)
+    dot = np.dot(body_pos,normal)
+    return dot
+
+
+
+
 
 def get_set_rise_idxs(below_horizon):
     set_idxs = below_horizon & ~np.roll(below_horizon, 1)
@@ -197,6 +204,8 @@ def print_lunar_night(year, month):
             print("")
 
 
+
+            
 def get_lunar_nights(year, delta_hour_search=1, delta_min_times=15):
     utc_times = np.arange(
         datetime(year, 1, 1), datetime(year, 12, 31), timedelta(hours=1)
